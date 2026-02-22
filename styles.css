@@ -1,0 +1,67 @@
+/* Основные стили для слов с ударением */
+.stressed-word {
+  cursor: help;
+  border-bottom: 2px dotted #4CAF50;
+  background-color: rgba(76, 175, 80, 0.1);
+  transition: all 0.3s ease;
+  display: inline-block;
+}
+
+.stressed-word:hover {
+  background-color: rgba(76, 175, 80, 0.3);
+  transform: scale(1.02);
+}
+
+/* Выделение ударной гласной */
+.stressed-word u {
+  text-decoration: none;
+  font-weight: bold;
+  color: #4CAF50;
+}
+
+/* Подсветка при поиске */
+.stressed-word.highlight {
+  background-color: rgba(255, 193, 7, 0.3);
+  border-bottom-color: #FFC107;
+  animation: pulse 1s;
+}
+
+/* Анимация пульсации */
+@keyframes pulse {
+  0% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.05);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+/* Стили для модального окна */
+.stress-modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 10000;
+}
+
+/* Индикатор загрузки */
+.stress-loading {
+  display: inline-block;
+  width: 20px;
+  height: 20px;
+  border: 3px solid #f3f3f3;
+  border-top: 3px solid #4CAF50;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
