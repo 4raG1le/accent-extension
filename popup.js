@@ -4,7 +4,6 @@ document.addEventListener('DOMContentLoaded', function() {
   const statusDiv = document.getElementById('status');
   const wordListDiv = document.getElementById('wordList');
 
-  // Загружаем сохраненные слова
   loadWordList();
 
   selectStressBtn.addEventListener('click', function() {
@@ -29,15 +28,12 @@ document.addEventListener('DOMContentLoaded', function() {
     });
   });
 
-  // Слушаем сообщения от content script
   chrome.runtime.onMessage.addListener(function(request, sender, sendResponse) {
-    if (request.action === 'wordSelected') {
-      statusDiv.textContent = 'Выберите ударение в слове: ' + request.word;
-    } else if (request.action === 'stressSaved') {
+    if (request.action === 'stressSaved') {
       statusDiv.textContent = 'Ударение сохранено!';
       selectStressBtn.disabled = false;
       clearSelectionBtn.disabled = true;
-      loadWordList(); // Обновляем список слов
+      loadWordList();
     }
   });
 
@@ -55,13 +51,14 @@ document.addEventListener('DOMContentLoaded', function() {
         const wordDiv = document.createElement('div');
         wordDiv.className = 'word-item';
         
-        // Создаем HTML с выделенным ударением
-        const stressedHtml = wordObj.stressed.replace(/\u0301/g, '<span style="color: #4CAF50; font-weight: bold;">́</span>');
+        const date = new Date(wordObj.timestamp);
+        const timeStr = date.toLocaleTimeString();
         
         wordDiv.innerHTML = `
-          <div style="display: flex; align-items: center; gap: 10px;">
-            <span class="word-text" data-original="${wordObj.original}" style="cursor: pointer;" title="Нажмите, чтобы подсветить на странице">
-              ${wordObj.original} → ${stressedHtml}
+          <div style="display: flex; align-items: center; gap: 10px; width:100%;">
+            <span class="word-text" data-word-id="${wordObj.id}" style="cursor: pointer; flex-grow:1;" title="Нажмите, чтобы подсветить на странице">
+              <span style="color:#666; font-size:11px;">${timeStr}</span><br>
+              <strong>${wordObj.original}</strong> → <span style="color:#4CAF50;">${wordObj.stressed}</span>
             </span>
             <span class="remove-word" data-index="${index}" style="color: #ff4444; cursor: pointer; font-size: 18px; font-weight: bold;">×</span>
           </div>
@@ -70,20 +67,18 @@ document.addEventListener('DOMContentLoaded', function() {
         wordListDiv.appendChild(wordDiv);
       });
 
-      // Добавляем обработчики для подсветки слов при наведении
       document.querySelectorAll('.word-text').forEach(el => {
-        el.addEventListener('mouseenter', function() {
-          const original = this.dataset.original;
+        el.addEventListener('click', function() {
+          const wordId = this.dataset.wordId;
           chrome.tabs.query({active: true, currentWindow: true}, function(tabs) {
             chrome.tabs.sendMessage(tabs[0].id, {
-              action: 'highlightWord', 
-              word: original
+              action: 'highlightWord',
+              wordId: wordId
             });
           });
         });
       });
 
-      // Добавляем обработчики для удаления слов
       document.querySelectorAll('.remove-word').forEach(btn => {
         btn.addEventListener('click', function(e) {
           e.stopPropagation();
@@ -100,7 +95,6 @@ document.addEventListener('DOMContentLoaded', function() {
       words.splice(index, 1);
       chrome.storage.local.set({stressedWords: words}, function() {
         loadWordList();
-        // Обновляем ударения на странице
         chrome.tabs.query({active: true, currentWindow: true}, function(tabs) {
           chrome.tabs.sendMessage(tabs[0].id, {action: 'updateStresses', words: words});
         });
