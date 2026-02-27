@@ -1,6 +1,4 @@
 let selectionMode = false;
-let selectedPhrase = '';
-let selectedWord = '';
 let selectedElement = null;
 let selectedRange = null;
 let wordsWithStress = [];
@@ -17,16 +15,12 @@ function initializeExtension() {
       wordsWithStress = result.stressedWords;
       console.log('Загружены слова с ударениями:', wordsWithStress);
       applyStresses();
-    } else {
-      console.log('Нет сохраненных слов с ударениями');
     }
     isInitialized = true;
   });
 }
 
 // Запускаем инициализацию
-initializeExtension();
-
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', initializeExtension);
 } else {
@@ -48,17 +42,14 @@ chrome.runtime.onMessage.addListener(function(request, sender, sendResponse) {
   
   if (request.action === 'startSelection') {
     selectionMode = true;
-    selectedPhrase = '';
-    selectedWord = '';
     selectedElement = null;
     selectedRange = null;
     document.body.style.cursor = 'crosshair';
-    showNotification('Выберите фразу, затем слово и ударение');
+    showNotification('Кликните на слово для добавления ударения');
     sendResponse({status: 'started'});
   } else if (request.action === 'cancelSelection') {
     selectionMode = false;
     document.body.style.cursor = 'default';
-    hideSelectionOverlay();
     sendResponse({status: 'cancelled'});
   } else if (request.action === 'updateStresses') {
     wordsWithStress = request.words;
@@ -68,8 +59,6 @@ chrome.runtime.onMessage.addListener(function(request, sender, sendResponse) {
   } else if (request.action === 'highlightWord') {
     if (request.wordId) {
       highlightWordById(request.wordId);
-    } else if (request.word) {
-      highlightWordByText(request.word);
     }
     sendResponse({status: 'highlighted'});
   }
@@ -124,112 +113,120 @@ document.addEventListener('visibilitychange', function() {
 
 // Обработка кликов для выбора слова
 document.addEventListener('click', function(e) {
-  if (!selectionMode) return;
-  
-  // Проверяем, не кликнули ли по модальному окну
-  if (e.target.closest('#stress-modal') || e.target.closest('.stress-btn')) {
+  // Если клик по модальному окну - игнорируем
+  if (e.target.closest('#stress-modal') || e.target.closest('#modal-overlay')) {
     return;
   }
+  
+  if (!selectionMode) return;
   
   e.preventDefault();
   e.stopPropagation();
 
-  if (!selectedPhrase) {
-    // Первый клик - выбираем фразу
-    const range = document.caretRangeFromPoint(e.clientX, e.clientY);
-    if (!range) return;
+  // Получаем информацию о слове под курсором
+  const wordInfo = getWordAtPoint(e.clientX, e.clientY);
+  
+  if (wordInfo && wordInfo.word) {
+    selectedElement = wordInfo.node;
+    selectedRange = {
+      start: wordInfo.start,
+      end: wordInfo.end,
+      text: wordInfo.text
+    };
     
-    selectedRange = range;
-    selectedElement = range.startContainer;
-    selectedPhrase = getPhraseFromRange(range);
+    // Временно отключаем режим выбора
+    selectionMode = false;
+    document.body.style.cursor = 'default';
     
-    if (selectedPhrase) {
-      highlightPhrase(selectedPhrase);
-      showNotification('Теперь выберите слово в фразе');
-    }
-  } else if (!selectedWord) {
-    // Второй клик - выбираем слово
-    const range = document.caretRangeFromPoint(e.clientX, e.clientY);
-    if (!range) return;
-    
-    const word = getWordFromRange(range);
-    if (word && selectedPhrase.includes(word)) {
-      selectedWord = word;
-      showStressSelection(word, selectedElement, selectedRange);
-    } else {
-      showNotification('Выберите слово из выделенной фразы');
-    }
+    // Показываем диалог выбора ударения
+    showStressSelection(wordInfo.word, wordInfo);
+  } else {
+    showNotification('Не удалось определить слово');
   }
 }, true);
 
-function getPhraseFromRange(range) {
-  if (!range) return '';
+// Функция для получения слова по координатам
+function getWordAtPoint(x, y) {
+  const range = document.caretRangeFromPoint(x, y);
+  if (!range) return null;
   
   const node = range.startContainer;
-  if (node.nodeType === Node.TEXT_NODE) {
-    const text = node.textContent;
-    // Берем всю строку или предложение
-    const lines = text.split('\n');
-    let charCount = 0;
-    
-    for (let line of lines) {
-      if (range.startOffset >= charCount && range.startOffset <= charCount + line.length) {
-        return line.trim();
-      }
-      charCount += line.length + 1;
-    }
+  if (node.nodeType !== Node.TEXT_NODE) return null;
+  
+  const text = node.textContent;
+  const offset = range.startOffset;
+  
+  // Находим границы слова
+  let start = offset;
+  let end = offset;
+  
+  // Ищем начало слова (двигаемся влево до разделителя)
+  while (start > 0 && !isWordBoundary(text[start - 1])) {
+    start--;
   }
-  return '';
+  
+  // Ищем конец слова (двигаемся вправо до разделителя)
+  while (end < text.length && !isWordBoundary(text[end])) {
+    end++;
+  }
+  
+  const word = text.substring(start, end).trim();
+  
+  if (!word || word.length === 0) return null;
+  
+  return {
+    word: word,
+    node: node,
+    start: start,
+    end: end,
+    text: text,
+    element: node.parentElement
+  };
 }
 
-function getWordFromRange(range) {
-  if (!range) return '';
-  
-  const node = range.startContainer;
-  if (node.nodeType === Node.TEXT_NODE) {
-    const text = node.textContent;
-    
-    // Находим границы слова
-    let start = range.startOffset;
-    let end = range.startOffset;
-    
-    // Ищем начало слова
-    while (start > 0 && !text[start - 1].match(/\s/)) {
-      start--;
-    }
-    
-    // Ищем конец слова
-    while (end < text.length && !text[end].match(/\s/)) {
-      end++;
-    }
-    
-    return text.substring(start, end).trim();
-  }
-  return '';
+// Проверка границы слова
+function isWordBoundary(char) {
+  return char.match(/[\s.,!?;:()\[\]{}<>\/\\\-="'«»]/) !== null;
 }
 
-function highlightPhrase(phrase) {
-  hideSelectionOverlay();
+// Показываем диалог выбора ударения
+function showStressSelection(word, wordInfo) {
+  // Находим все гласные в слове
+  const vowels = [];
+  for (let i = 0; i < word.length; i++) {
+    if ('аеёиоуыэюяАЕЁИОУЫЭЮЯ'.includes(word[i])) {
+      vowels.push({
+        index: i,
+        letter: word[i]
+      });
+    }
+  }
   
-  // Создаем полупрозрачный overlay
+  if (vowels.length === 0) {
+    alert('В слове нет гласных букв');
+    selectionMode = true;
+    document.body.style.cursor = 'crosshair';
+    return;
+  }
+  
+  // Удаляем предыдущее модальное окно
+  removeExistingModal();
+  
+  // Создаем затемнение
   const overlay = document.createElement('div');
-  overlay.id = 'phrase-highlight';
+  overlay.id = 'modal-overlay';
   overlay.style.cssText = `
     position: fixed;
     top: 0;
     left: 0;
     right: 0;
     bottom: 0;
-    background-color: rgba(255, 255, 0, 0.1);
-    pointer-events: none;
+    background: rgba(0,0,0,0.5);
     z-index: 10000;
   `;
   document.body.appendChild(overlay);
-  
-  showNotification('Выбрана фраза: "' + phrase + '"');
-}
 
-function showStressSelection(word, element, range) {
+  // Создаем модальное окно
   const modal = document.createElement('div');
   modal.id = 'stress-modal';
   modal.style.cssText = `
@@ -247,50 +244,30 @@ function showStressSelection(word, element, range) {
     border: 1px solid #ddd;
   `;
 
-  const letters = word.split('');
   let html = '<h3 style="margin:0 0 15px 0; color:#333;">Выберите ударную гласную:</h3>';
   html += '<div style="font-size:20px; margin-bottom:20px; padding:10px; background:#f5f5f5; border-radius:8px;">"' + word + '"</div>';
   html += '<div style="display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; margin-bottom:20px;">';
   
-  letters.forEach((letter, index) => {
-    if ('аеёиоуыэюяАЕЁИОУЫЭЮЯ'.includes(letter)) {
-      const before = word.substring(0, index);
-      const after = word.substring(index + 1);
-      const stressedChar = letter + '\u0301';
-      const stressedWord = before + stressedChar + after;
-      
-      html += `<button class="stress-btn" 
-        data-stressed="${stressedWord}" 
-        data-index="${index}"
-        data-original="${word}"
-        style="margin: 2px; padding: 12px 18px; background-color: #4CAF50; color: white; border: none; border-radius: 6px; cursor: pointer; font-size:18px; box-shadow: 0 2px 5px rgba(0,0,0,0.2);">
-        ${stressedWord}
-      </button>`;
-    }
+  vowels.forEach(v => {
+    const before = word.substring(0, v.index);
+    const after = word.substring(v.index + 1);
+    const stressedChar = word[v.index] + '\u0301';
+    const stressedWord = before + stressedChar + after;
+    
+    html += `<button class="stress-btn" 
+      data-word="${word}" 
+      data-index="${v.index}"
+      data-stressed="${stressedWord}"
+      style="margin: 2px; padding: 12px 18px; background-color: #4CAF50; color: white; border: none; border-radius: 6px; cursor: pointer; font-size:18px; box-shadow: 0 2px 5px rgba(0,0,0,0.2);">
+      ${stressedWord}
+    </button>`;
   });
   
   html += '</div>';
-  html += '<div style="display: flex; gap: 10px; justify-content: center;">';
   html += '<button id="cancel-stress" style="padding: 10px 25px; background-color: #f44336; color: white; border: none; border-radius: 6px; cursor: pointer; font-size:14px;">Отмена</button>';
-  html += '<button id="save-all" style="padding: 10px 25px; background-color: #2196F3; color: white; border: none; border-radius: 6px; cursor: pointer; font-size:14px;">Применить ко всем</button>';
-  html += '</div>';
   
   modal.innerHTML = html;
   document.body.appendChild(modal);
-
-  // Затемнение фона
-  const overlay = document.createElement('div');
-  overlay.id = 'modal-overlay';
-  overlay.style.cssText = `
-    position: fixed;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    background: rgba(0,0,0,0.5);
-    z-index: 10000;
-  `;
-  document.body.appendChild(overlay);
 
   // Обработка кнопок с ударением
   modal.querySelectorAll('.stress-btn').forEach(btn => {
@@ -298,226 +275,228 @@ function showStressSelection(word, element, range) {
       e.preventDefault();
       e.stopPropagation();
       
+      const originalWord = this.dataset.word;
       const stressedWord = this.dataset.stressed;
-      const originalWord = this.dataset.original;
+      const accentIndex = parseInt(this.dataset.index);
       
-      // Сохраняем для конкретного слова
-      saveWordStress(originalWord, stressedWord, true, element, range);
+      // Сохраняем для конкретного слова на странице
+      saveSpecificWordStress(originalWord, stressedWord, accentIndex, wordInfo);
       
-      closeModal(modal, overlay);
-    }, true);
+      closeModal();
+    });
   });
 
-  // Кнопка "Применить ко всем"
-  document.getElementById('save-all').addEventListener('click', function(e) {
-    e.preventDefault();
-    e.stopPropagation();
-    
-    // Берем первую гласную как ударение по умолчанию
-    const firstBtn = modal.querySelector('.stress-btn');
-    if (firstBtn) {
-      const stressedWord = firstBtn.dataset.stressed;
-      const originalWord = firstBtn.dataset.original;
-      
-      // Сохраняем для всех вхождений
-      saveWordStress(originalWord, stressedWord, false);
-    }
-    
-    closeModal(modal, overlay);
-  });
-
+  // Кнопка отмены
   document.getElementById('cancel-stress').addEventListener('click', function(e) {
     e.preventDefault();
     e.stopPropagation();
-    closeModal(modal, overlay);
-    selectionMode = false;
-    document.body.style.cursor = 'default';
-    hideSelectionOverlay();
-    showNotification('Выбор отменен');
-  }, true);
+    closeModal(true); // Возвращаем режим выбора
+  });
+
+  // Закрытие по клику на оверлей
+  overlay.addEventListener('click', function(e) {
+    e.preventDefault();
+    e.stopPropagation();
+    closeModal(true); // Возвращаем режим выбора
+  });
+
+  // Закрытие по Escape
+  function onEscape(e) {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopPropagation();
+      closeModal(true); // Возвращаем режим выбора
+      document.removeEventListener('keydown', onEscape);
+    }
+  }
+  document.addEventListener('keydown', onEscape);
 }
 
-function closeModal(modal, overlay) {
+// Функция закрытия модального окна
+function closeModal(restoreSelectionMode = false) {
+  removeExistingModal();
+  
+  if (restoreSelectionMode) {
+    selectionMode = true;
+    document.body.style.cursor = 'crosshair';
+  } else {
+    selectionMode = false;
+    document.body.style.cursor = 'default';
+  }
+}
+
+// Удаление модального окна
+function removeExistingModal() {
+  const modal = document.getElementById('stress-modal');
+  const overlay = document.getElementById('modal-overlay');
+  
   if (modal && modal.parentNode) modal.parentNode.removeChild(modal);
   if (overlay && overlay.parentNode) overlay.parentNode.removeChild(overlay);
 }
 
-function saveWordStress(original, stressed, specificOnly, element, range) {
+// Сохранение ударения для конкретного слова
+function saveSpecificWordStress(original, stressed, accentIndex, wordInfo) {
+  // Создаем уникальный идентификатор для этого конкретного слова
+  const path = getUniquePath(wordInfo.node, wordInfo.start);
+  
+  const wordObj = {
+    id: generateId(),
+    original: original,
+    stressed: stressed,
+    accentIndex: accentIndex,
+    path: path,
+    startOffset: wordInfo.start,
+    endOffset: wordInfo.end,
+    pageUrl: window.location.href,
+    pageTitle: document.title,
+    timestamp: Date.now()
+  };
+  
   chrome.storage.local.get(['stressedWords'], function(result) {
     let words = result.stressedWords || [];
     
-    let wordObj;
+    // Удаляем старую запись для этого же конкретного слова
+    words = words.filter(w => !(w.path === path && w.original === original));
     
-    if (specificOnly && element && range) {
-      // Сохраняем для конкретного слова
-      const path = getElementPath(element);
-      wordObj = {
-        id: generateId(),
-        original: original,
-        stressed: stressed,
-        elementPath: path,
-        textPosition: range.startOffset,
-        specific: true,
-        timestamp: Date.now()
-      };
-    } else {
-      // Сохраняем для всех вхождений
-      wordObj = {
-        id: generateId(),
-        original: original,
-        stressed: stressed,
-        specific: false,
-        timestamp: Date.now()
-      };
-    }
-    
-    // Удаляем старую запись для этого же слова (если есть)
-    const existingIndex = words.findIndex(w => 
-      w.original === original && w.specific === wordObj.specific
-    );
-    
-    if (existingIndex !== -1) {
-      words[existingIndex] = wordObj;
-    } else {
-      words.push(wordObj);
-    }
+    words.push(wordObj);
     
     chrome.storage.local.set({stressedWords: words}, function() {
       wordsWithStress = words;
-      applyStresses();
       
-      const message = specificOnly ? 
-        'Ударение сохранено для конкретного слова' : 
-        'Ударение будет применяться ко всем словам "' + original + '"';
+      // Применяем ударение к текущему слову
+      applyStressToWord(wordInfo, accentIndex, wordObj.id);
       
-      showNotification(message);
+      showNotification('Ударение сохранено для этого слова');
       
       chrome.runtime.sendMessage({
         action: 'stressSaved', 
         word: stressed,
         wordId: wordObj.id
       });
-      
-      selectionMode = false;
-      document.body.style.cursor = 'default';
-      hideSelectionOverlay();
     });
   });
 }
 
-function generateId() {
-  return 'word_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
-}
-
-function getElementPath(element) {
-  if (!element) return '';
+// Получение уникального пути к текстовому узлу
+function getUniquePath(node, offset) {
+  if (!node) return '';
   
-  // Поднимаемся до элемента, если это текстовый узел
-  while (element && element.nodeType === Node.TEXT_NODE) {
-    element = element.parentNode;
+  // Поднимаемся до элемента
+  while (node && node.nodeType === Node.TEXT_NODE) {
+    node = node.parentNode;
   }
   
-  if (!element) return '';
+  if (!node) return '';
   
+  // Строим CSS-селектор
   const path = [];
-  while (element && element !== document.body) {
-    let selector = element.tagName.toLowerCase();
-    if (element.id) {
-      selector += '#' + element.id;
-    } else if (element.className) {
-      const classes = element.className.split(' ').filter(c => c.trim());
-      if (classes.length) {
-        selector += '.' + classes.join('.');
+  while (node && node !== document.body) {
+    let selector = node.tagName.toLowerCase();
+    
+    if (node.id) {
+      selector += '#' + node.id;
+      path.unshift(selector);
+      break;
+    } else {
+      if (node.className) {
+        const classes = node.className.split(' ').filter(c => c.trim());
+        if (classes.length) {
+          selector += '.' + classes.join('.');
+        }
       }
+      
+      // Добавляем индекс среди соседей
+      const siblings = Array.from(node.parentNode.children);
+      const index = siblings.indexOf(node);
+      selector += `:nth-child(${index + 1})`;
+      
+      path.unshift(selector);
+      node = node.parentNode;
     }
-    path.unshift(selector);
-    element = element.parentNode;
   }
   
-  return path.join(' > ');
+  return path.join(' > ') + `::text[${offset}]`;
 }
 
+// Применение ударения к конкретному слову
+function applyStressToWord(wordInfo, accentIndex, wordId) {
+  const { node, start, end, text } = wordInfo;
+  const word = text.substring(start, end);
+  
+  // Создаем новое слово с ударением
+  const stressedWord = word.substring(0, accentIndex) + 
+                      word[accentIndex] + '\u0301' + 
+                      word.substring(accentIndex + 1);
+  
+  // Разбиваем текст на части
+  const beforeWord = text.substring(0, start);
+  const afterWord = text.substring(end);
+  
+  // Создаем новый текстовый узел для части до слова
+  if (beforeWord) {
+    const beforeNode = document.createTextNode(beforeWord);
+    node.parentNode.insertBefore(beforeNode, node);
+  }
+  
+  // Создаем span с ударным словом
+  const span = document.createElement('span');
+  span.className = 'stressed-word';
+  span.setAttribute('data-word-id', wordId);
+  span.setAttribute('data-original', word);
+  span.setAttribute('data-stressed', stressedWord);
+  span.setAttribute('title', `Ударение: ${stressedWord}`);
+  span.textContent = stressedWord;
+  
+  // Копируем стили от родителя
+  copyStyles(node.parentElement, span);
+  
+  node.parentNode.insertBefore(span, node);
+  
+  // Создаем новый текстовый узел для части после слова
+  if (afterWord) {
+    const afterNode = document.createTextNode(afterWord);
+    node.parentNode.insertBefore(afterNode, node);
+  }
+  
+  // Удаляем оригинальный текстовый узел
+  node.remove();
+}
+
+// Копирование стилей
+function copyStyles(source, target) {
+  if (!source) return;
+  
+  const styles = window.getComputedStyle(source);
+  const importantProps = [
+    'font-family', 'font-size', 'font-weight', 'font-style',
+    'color', 'background-color', 'line-height', 'letter-spacing',
+    'text-transform', 'text-decoration'
+  ];
+  
+  importantProps.forEach(prop => {
+    target.style[prop] = styles.getPropertyValue(prop);
+  });
+}
+
+// Применение всех сохраненных ударений
 function applyStresses() {
   if (!wordsWithStress || wordsWithStress.length === 0) return;
 
   console.log('Применяем ударения к странице');
   
-  // Сначала применяем общие правила (для всех вхождений)
-  const generalWords = wordsWithStress.filter(w => !w.specific);
+  const currentUrl = window.location.href;
+  const pageWords = wordsWithStress.filter(w => w.pageUrl === currentUrl);
   
-  // Затем применяем специфичные (для конкретных слов)
-  const specificWords = wordsWithStress.filter(w => w.specific);
-
-  // Применяем общие правила ко всем текстовым узлам
-  if (generalWords.length > 0) {
-    applyGeneralStresses(generalWords);
-  }
+  if (pageWords.length === 0) return;
   
-  // Применяем специфичные правила
-  if (specificWords.length > 0) {
-    applySpecificStresses(specificWords);
-  }
-  
-  addStressStyles();
-}
-
-function applyGeneralStresses(words) {
-  const walker = document.createTreeWalker(
-    document.body,
-    NodeFilter.SHOW_TEXT,
-    {
-      acceptNode: function(node) {
-        if (node.parentElement && (
-            node.parentElement.tagName === 'SCRIPT' || 
-            node.parentElement.tagName === 'STYLE' ||
-            node.parentElement.id === 'stress-modal' ||
-            node.parentElement.id === 'modal-overlay' ||
-            node.parentElement.classList.contains('stressed-word')
-        )) {
-          return NodeFilter.FILTER_REJECT;
-        }
-        return NodeFilter.FILTER_ACCEPT;
-      }
-    }
-  );
-
-  const textNodes = [];
-  while (walker.nextNode()) {
-    textNodes.push(walker.currentNode);
-  }
-
-  textNodes.forEach(node => {
-    let text = node.textContent;
-    let modified = false;
-    let resultHTML = text;
-
-    words.forEach(wordObj => {
-      const regex = new RegExp('\\b' + escapeRegExp(wordObj.original) + '\\b', 'g');
-      
-      if (regex.test(resultHTML)) {
-        resultHTML = resultHTML.replace(regex, function(match) {
-          return `<span class="stressed-word" data-word-id="${wordObj.id}" title="Ударение: ${wordObj.stressed}">${wordObj.stressed}</span>`;
-        });
-        modified = true;
-      }
-    });
-
-    if (modified) {
-      const span = document.createElement('span');
-      span.innerHTML = resultHTML;
-      node.parentNode.replaceChild(span, node);
-    }
-  });
-}
-
-function applySpecificStresses(words) {
-  words.forEach(wordObj => {
+  // Проходим по всем сохраненным словам для этой страницы
+  pageWords.forEach(wordObj => {
     try {
       // Ищем элемент по пути
-      const element = findElementByPath(wordObj.elementPath);
+      const element = findElementByPath(wordObj.path);
       if (!element) return;
       
-      // Ищем текстовые узлы в элементе
+      // В элементе ищем текстовый узел с нужным смещением
       const textNodes = [];
       const walker = document.createTreeWalker(
         element,
@@ -536,58 +515,89 @@ function applySpecificStresses(words) {
         textNodes.push(walker.currentNode);
       }
       
-      // В каждом текстовом узле ищем наше слово
       textNodes.forEach(node => {
         const text = node.textContent;
-        const position = wordObj.textPosition;
         
         // Проверяем, содержит ли узел наше слово примерно в нужной позиции
         if (text.includes(wordObj.original)) {
-          // Заменяем конкретное вхождение
-          let resultHTML = '';
-          let lastIndex = 0;
-          let found = false;
+          const index = text.indexOf(wordObj.original);
           
-          const regex = new RegExp(escapeRegExp(wordObj.original), 'g');
-          let match;
-          
-          while ((match = regex.exec(text)) !== null) {
-            // Если это похоже на нужную позицию
-            if (!found && Math.abs(match.index - position) < wordObj.original.length) {
-              resultHTML += text.substring(lastIndex, match.index);
-              resultHTML += `<span class="stressed-word specific" data-word-id="${wordObj.id}" title="Ударение: ${wordObj.stressed}">${wordObj.stressed}</span>`;
-              lastIndex = match.index + wordObj.original.length;
-              found = true;
-            }
-          }
-          
-          if (found) {
-            resultHTML += text.substring(lastIndex);
-            
-            const span = document.createElement('span');
-            span.innerHTML = resultHTML;
-            node.parentNode.replaceChild(span, node);
+          // Если позиция примерно совпадает
+          if (Math.abs(index - wordObj.startOffset) < 5) {
+            applyStressToNode(node, wordObj);
           }
         }
       });
     } catch (e) {
-      console.log('Ошибка при применении специфичного ударения:', e);
+      console.log('Ошибка при применении ударения:', e);
     }
   });
+  
+  addStressStyles();
 }
 
+// Применение ударения к найденному узлу
+function applyStressToNode(node, wordObj) {
+  const text = node.textContent;
+  const word = wordObj.original;
+  const stressedWord = wordObj.stressed;
+  const index = text.indexOf(word);
+  
+  if (index === -1) return;
+  
+  // Разбиваем текст
+  const beforeWord = text.substring(0, index);
+  const afterWord = text.substring(index + word.length);
+  
+  // Создаем новый текстовый узел для части до слова
+  if (beforeWord) {
+    const beforeNode = document.createTextNode(beforeWord);
+    node.parentNode.insertBefore(beforeNode, node);
+  }
+  
+  // Создаем span с ударным словом
+  const span = document.createElement('span');
+  span.className = 'stressed-word';
+  span.setAttribute('data-word-id', wordObj.id);
+  span.setAttribute('data-original', word);
+  span.setAttribute('data-stressed', stressedWord);
+  span.setAttribute('title', `Ударение: ${stressedWord}`);
+  span.textContent = stressedWord;
+  
+  // Копируем стили
+  copyStyles(node.parentElement, span);
+  
+  node.parentNode.insertBefore(span, node);
+  
+  // Создаем новый текстовый узел для части после слова
+  if (afterWord) {
+    const afterNode = document.createTextNode(afterWord);
+    node.parentNode.insertBefore(afterNode, node);
+  }
+  
+  // Удаляем оригинальный узел
+  node.remove();
+}
+
+// Поиск элемента по пути
 function findElementByPath(path) {
   try {
-    return document.querySelector(path);
+    if (!path) return null;
+    
+    // Убираем часть с ::text
+    const elementPath = path.split('::')[0];
+    return document.querySelector(elementPath);
   } catch (e) {
     return null;
   }
 }
 
-function escapeRegExp(string) {
-  return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+// Генерация ID
+function generateId() {
+  return 'word_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
 }
 
+// Добавление стилей
 function addStressStyles() {
   if (document.getElementById('stress-styles')) return;
   
@@ -607,15 +617,6 @@ function addStressStyles() {
       border-bottom-width: 3px;
     }
     
-    .stressed-word.specific {
-      border-bottom-color: #FF9800;
-      background-color: rgba(255, 152, 0, 0.1);
-    }
-    
-    .stressed-word.specific:hover {
-      background-color: rgba(255, 152, 0, 0.3);
-    }
-    
     .stressed-word.highlight {
       background-color: rgba(255, 193, 7, 0.5);
       border-bottom-color: #FFC107;
@@ -631,6 +632,7 @@ function addStressStyles() {
   document.head.appendChild(style);
 }
 
+// Подсветка слова по ID
 function highlightWordById(wordId) {
   const elements = document.querySelectorAll(`[data-word-id="${wordId}"]`);
   
@@ -648,29 +650,7 @@ function highlightWordById(wordId) {
   }
 }
 
-function highlightWordByText(word) {
-  const elements = document.querySelectorAll('.stressed-word');
-  let found = false;
-  
-  elements.forEach(el => {
-    if (el.textContent.includes(word)) {
-      el.classList.add('highlight');
-      if (!found) {
-        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        found = true;
-      }
-      
-      setTimeout(() => {
-        el.classList.remove('highlight');
-      }, 2000);
-    }
-  });
-  
-  if (!found) {
-    showNotification('Слово "' + word + '" не найдено на странице');
-  }
-}
-
+// Показ уведомлений
 function showNotification(message) {
   const oldNotification = document.getElementById('stress-notification');
   if (oldNotification) {
@@ -703,11 +683,6 @@ function showNotification(message) {
       notification.parentNode.removeChild(notification);
     }
   }, 3000);
-}
-
-function hideSelectionOverlay() {
-  const overlay = document.getElementById('phrase-highlight');
-  if (overlay) overlay.remove();
 }
 
 // Добавляем стили для анимаций
